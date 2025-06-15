@@ -19,7 +19,7 @@ logging.basicConfig(
 app = Flask(__name__)
 CORS(app)
 
-# Swagger config
+# Swagger configuration
 app.config['SWAGGER'] = {
     'title': 'Cardiovascular Disease Prediction API',
     'uiversion': 3
@@ -28,31 +28,34 @@ swagger = Swagger(app)
 
 # Load model and dummy scaler
 try:
-    model = joblib.load('model_rf.pkl')
+    model = joblib.load('model_rf.pkl')  # Ganti dengan path model kamu
     dummy_data = pd.DataFrame(np.random.rand(1, 12), columns=[
         'age', 'gender', 'chestpain', 'restingBP', 'serumcholestrol',
         'fastingbloodsugar', 'restingrelectro', 'maxheartrate',
         'exerciseangia', 'oldpeak', 'slope', 'noofmajorvessels'
     ])
-    scaler = MinMaxScaler().fit(dummy_data)  # Replace with actual scaler in production
+    scaler = MinMaxScaler().fit(dummy_data)  # Dummy scaler untuk contoh
     print("Model and dummy scaler loaded successfully.")
 except Exception as e:
-    print(f"Error loading model or creating scaler: {e}")
+    print(f"Error loading model or scaler: {e}")
     model = None
     scaler = None
 
-label_names = ['Absence of Heart Disease', 'Presence of Heart Disease']
-label_map = {'Absence of Heart Disease': 0, 'Presence of Heart Disease': 1}
+# Mapping model label ke user-friendly label
+mapping_to_cardio = {
+    'Presence of Heart Disease': 'Cardio',
+    'Absence of Heart Disease': 'Not Cardio'
+}
 
 @app.route('/')
 def home():
-    return "Cardiovascular Disease Prediction API"
+    return "Welcome to Cardiovascular Disease Prediction API. Visit /apidocs for Swagger UI."
 
 @app.route('/predict', methods=['POST'])
 @swag_from({
     'tags': ['Prediction'],
-    'summary': 'Predict risk of heart disease',
-    'description': 'Accepts clinical input data and returns prediction with probabilities.',
+    'summary': 'Predict risk of cardiovascular disease',
+    'description': 'Provide clinical input features to predict the risk of cardiovascular disease (Cardio or Not Cardio).',
     'parameters': [
         {
             'name': 'features',
@@ -93,35 +96,26 @@ def home():
             'schema': {
                 'type': 'object',
                 'properties': {
-                    'prediction_label_numeric': {'type': 'integer', 'example': 0},
-                    'prediction_label_string': {'type': 'string', 'example': 'Absence of Heart Disease'},
+                    'prediction_label_numeric': {'type': 'integer', 'example': 1},
+                    'prediction_label_string': {'type': 'string', 'example': 'Cardio'},
                     'probabilities': {
                         'type': 'object',
                         'properties': {
-                            'Absence of Heart Disease': {'type': 'number', 'example': 0.87},
-                            'Presence of Heart Disease': {'type': 'number', 'example': 0.13}
+                            'Cardio': {'type': 'number', 'example': 0.85},
+                            'Not Cardio': {'type': 'number', 'example': 0.15}
                         }
-                    }
+                    },
+                    'timestamp': {'type': 'string', 'example': '2025-06-15T12:00:00'}
                 }
             }
         },
         400: {
-            'description': 'Missing feature in input',
-            'schema': {
-                'type': 'object',
-                'properties': {
-                    'error': {'type': 'string'}
-                }
-            }
+            'description': 'Missing or invalid input',
+            'schema': {'type': 'object', 'properties': {'error': {'type': 'string'}}}
         },
         500: {
             'description': 'Server error',
-            'schema': {
-                'type': 'object',
-                'properties': {
-                    'error': {'type': 'string'}
-                }
-            }
+            'schema': {'type': 'object', 'properties': {'error': {'type': 'string'}}}
         }
     }
 })
@@ -132,6 +126,7 @@ def predict():
     try:
         data = request.get_json()
         input_features_dict = data['features']
+
         input_features_order = [
             'age', 'gender', 'chestpain', 'restingBP', 'serumcholestrol',
             'fastingbloodsugar', 'restingrelectro', 'maxheartrate',
@@ -142,24 +137,31 @@ def predict():
         input_array = np.array(input_values).reshape(1, -1)
         scaled_input_array = scaler.transform(input_array)
 
+        # Prediction
+        raw_prediction = model.predict(scaled_input_array)[0]
+        prediction_label_str = mapping_to_cardio.get(raw_prediction, 'Unknown')
+        prediction_label_numeric = 1 if prediction_label_str == 'Cardio' else 0
 
-        prediction_label_str = model.predict(scaled_input_array)[0]
-        prediction_label_numeric = label_map.get(prediction_label_str, -1)  
         prediction_proba = model.predict_proba(scaled_input_array)[0]
         probabilities = {
-            label: float(prob)
+            mapping_to_cardio.get(label, label): round(float(prob), 4)
             for label, prob in zip(model.classes_, prediction_proba)
         }
+
         response = {
-            'prediction_label_numeric': int(prediction_label_numeric),
+            'prediction_label_numeric': prediction_label_numeric,
             'prediction_label_string': prediction_label_str,
-            'probabilities': probabilities
+            'probabilities': probabilities,
+            'timestamp': datetime.now().isoformat()
         }
 
+        logging.info(f"Prediction request: {input_features_dict} => {response}")
         return jsonify(response)
+
     except KeyError as e:
         return jsonify({"error": f"Missing feature in input: {e}"}), 400
     except Exception as e:
+        logging.exception("Error during prediction:")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":

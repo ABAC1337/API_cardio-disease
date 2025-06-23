@@ -2,11 +2,9 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flasgger import Swagger, swag_from
 import numpy as np
-import pandas as pd
 import joblib
 import logging
 from datetime import datetime
-from sklearn.preprocessing import MinMaxScaler
 
 # Setup logging
 logging.basicConfig(
@@ -15,7 +13,7 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-# Init Flask app
+# Initialize Flask app
 app = Flask(__name__)
 CORS(app)
 
@@ -26,30 +24,18 @@ app.config['SWAGGER'] = {
 }
 swagger = Swagger(app)
 
-# Load model and dummy scaler
-try:
-    model = joblib.load('model_rf.pkl')  # Ganti dengan path model kamu
-    dummy_data = pd.DataFrame(np.random.rand(1, 12), columns=[
-        'age', 'gender', 'chestpain', 'restingBP', 'serumcholestrol',
-        'fastingbloodsugar', 'restingrelectro', 'maxheartrate',
-        'exerciseangia', 'oldpeak', 'slope', 'noofmajorvessels'
-    ])
-    scaler = MinMaxScaler().fit(dummy_data)  # Dummy scaler untuk contoh
-    print("Model and dummy scaler loaded successfully.")
-except Exception as e:
-    print(f"Error loading model or scaler: {e}")
-    model = None
-    scaler = None
+# Load model and scaler
+model = joblib.load('RF_Model.pkl')
+scaler = joblib.load('scaler.pkl')
 
-# Mapping model label ke user-friendly label
-mapping_to_cardio = {
-    'Presence of Heart Disease': 'Cardio',
-    'Absence of Heart Disease': 'Not Cardio'
-}
+# Label classes for prediction output
+label_classes = ['Not Cardio', 'Cardio']
+
 
 @app.route('/')
 def home():
     return "Welcome to Cardiovascular Disease Prediction API. Visit /apidocs for Swagger UI."
+
 
 @app.route('/predict', methods=['POST'])
 @swag_from({
@@ -67,23 +53,24 @@ def home():
                     'features': {
                         'type': 'object',
                         'properties': {
-                            'age': {'type': 'number', 'example': 52},
-                            'gender': {'type': 'number', 'example': 1},
                             'chestpain': {'type': 'number', 'example': 0},
                             'restingBP': {'type': 'number', 'example': 130},
                             'serumcholestrol': {'type': 'number', 'example': 200},
                             'fastingbloodsugar': {'type': 'number', 'example': 0},
                             'restingrelectro': {'type': 'number', 'example': 1},
                             'maxheartrate': {'type': 'number', 'example': 160},
-                            'exerciseangia': {'type': 'number', 'example': 0},
-                            'oldpeak': {'type': 'number', 'example': 1.0},
                             'slope': {'type': 'number', 'example': 2},
                             'noofmajorvessels': {'type': 'number', 'example': 0}
                         },
                         'required': [
-                            'age', 'gender', 'chestpain', 'restingBP', 'serumcholestrol',
-                            'fastingbloodsugar', 'restingrelectro', 'maxheartrate',
-                            'exerciseangia', 'oldpeak', 'slope', 'noofmajorvessels'
+                            'chestpain',
+                            'restingBP',
+                            'serumcholestrol',
+                            'fastingbloodsugar',
+                            'restingrelectro',
+                            'maxheartrate',
+                            'slope',
+                            'noofmajorvessels'
                         ]
                     }
                 }
@@ -111,11 +98,21 @@ def home():
         },
         400: {
             'description': 'Missing or invalid input',
-            'schema': {'type': 'object', 'properties': {'error': {'type': 'string'}}}
+            'schema': {
+                'type': 'object',
+                'properties': {
+                    'error': {'type': 'string', 'example': 'Missing feature in input: chestpain'}
+                }
+            }
         },
         500: {
             'description': 'Server error',
-            'schema': {'type': 'object', 'properties': {'error': {'type': 'string'}}}
+            'schema': {
+                'type': 'object',
+                'properties': {
+                    'error': {'type': 'string', 'example': 'Model or scaler not loaded.'}
+                }
+            }
         }
     }
 })
@@ -125,44 +122,51 @@ def predict():
 
     try:
         data = request.get_json()
-        input_features_dict = data['features']
+        input_features = data.get('features', {})
 
-        input_features_order = [
-            'age', 'gender', 'chestpain', 'restingBP', 'serumcholestrol',
-            'fastingbloodsugar', 'restingrelectro', 'maxheartrate',
-            'exerciseangia', 'oldpeak', 'slope', 'noofmajorvessels'
+        required_fields = [
+            'chestpain', 'restingBP', 'serumcholestrol',
+            'fastingbloodsugar', 'restingrelectro',
+            'maxheartrate', 'slope', 'noofmajorvessels'
         ]
 
-        input_values = [input_features_dict[feature] for feature in input_features_order]
-        input_array = np.array(input_values).reshape(1, -1)
-        scaled_input_array = scaler.transform(input_array)
+        for field in required_fields:
+            if field not in input_features:
+                return jsonify({"error": f"Missing feature in input: '{field}'"}), 400
 
-        # Prediction
-        raw_prediction = model.predict(scaled_input_array)[0]
-        prediction_label_str = mapping_to_cardio.get(raw_prediction, 'Unknown')
-        prediction_label_numeric = 1 if prediction_label_str == 'Cardio' else 0
+        values = np.array([[
+            float(input_features['chestpain']),
+            float(input_features['restingBP']),
+            float(input_features['serumcholestrol']),
+            float(input_features['fastingbloodsugar']),
+            float(input_features['restingrelectro']),
+            float(input_features['maxheartrate']),
+            float(input_features['slope']),
+            float(input_features['noofmajorvessels']),
+        ]])
 
-        prediction_proba = model.predict_proba(scaled_input_array)[0]
-        probabilities = {
-            mapping_to_cardio.get(label, label): round(float(prob), 4)
-            for label, prob in zip(model.classes_, prediction_proba)
+        values_scaled = scaler.transform(values)
+        prediction = model.predict(values_scaled)[0]
+        probabilities = model.predict_proba(values_scaled)[0]
+
+        prob_dict = {
+            label_classes[i]: float(probabilities[i]) for i in range(len(label_classes))
         }
 
         response = {
-            'prediction_label_numeric': prediction_label_numeric,
-            'prediction_label_string': prediction_label_str,
-            'probabilities': probabilities,
-            'timestamp': datetime.now().isoformat()
+            "prediction_label_numeric": int(prediction),
+            "prediction_label_string": label_classes[prediction],
+            "probabilities": prob_dict,
+            "timestamp": datetime.now().isoformat()
         }
 
-        logging.info(f"Prediction request: {input_features_dict} => {response}")
+        logging.info(f"Prediction request: {input_features} => {response}")
         return jsonify(response)
 
-    except KeyError as e:
-        return jsonify({"error": f"Missing feature in input: {e}"}), 400
     except Exception as e:
         logging.exception("Error during prediction:")
         return jsonify({"error": str(e)}), 500
+
 
 if __name__ == "__main__":
     app.run(debug=True)
